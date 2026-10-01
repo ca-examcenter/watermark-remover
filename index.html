@@ -394,7 +394,7 @@ removeBtn.addEventListener('click', async ()=>{
     const bytes = await getBytes();
     const pdfDoc = await PDFDocument.load(bytes,{
       updateMetadata:false,
-      ignoreEncryption:false
+      ignoreEncryption:true
     });
 
     if(mode === 'area'){
@@ -422,7 +422,14 @@ removeBtn.addEventListener('click', async ()=>{
     status.textContent = 'Watermark remove সম্পন্ন হয়েছে। নিচের Download button চাপুন।';
 
   }catch(e){
-    status.textContent = 'Error: ' + e.message;
+    const msg = String(e && e.message ? e.message : e);
+    if (msg.toLowerCase().includes('password')) {
+      status.textContent = 'এই PDF password-protected। Password ছাড়া browser-only version এটি process করতে পারবে না।';
+    } else if (msg.toLowerCase().includes('encrypted')) {
+      status.textContent = 'PDF encrypted। এই version encrypted PDF load করার চেষ্টা করছে, কিন্তু এই file-এর encryption type browser library support নাও করতে পারে।';
+    } else {
+      status.textContent = 'Error: ' + msg;
+    }
   }finally{
     removeBtn.disabled = false;
   }
