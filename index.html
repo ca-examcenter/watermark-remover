@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="bn">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Large PDF Watermark Remover</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.7.76/pdf.min.mjs" type="module"></script>
+  <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+  <style>
+    *{box-sizing:border-box}
+    body{margin:0;background:#0f1319;color:#f4f7fb;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+    .wrap{max-width:820px;margin:auto;padding:24px 14px 60px}
+    h1{font-size:clamp(30px,7vw,48px);margin:0 0 10px}
+    p{color:#aeb8c7;line-height:1.6}
+    .card{background:#171d26;border:1px solid #2a3442;border-radius:20px;padding:18px;margin-top:16px}
+    .drop{border:1.5px dashed #46566e;border-radius:16px;padding:26px;text-align:center;display:block;cursor:pointer}
+    .drop input{display:none}
+    button,.download{width:100%;padding:14px;border-radius:13px;border:0;font-weight:700;font-size:15px;margin-top:10px}
+    button{background:#79a8ff;color:#07101d}
+    button.secondary{background:#263140;color:#fff;border:1px solid #36465b}
+    button:disabled{opacity:.5}
+    .download{display:block;text-align:center;text-decoration:none;background:#1f6c4e;color:#fff}
+    .hidden{display:none}
+    .status{margin-top:12px;color:#c4d0df;font-size:14px;word-break:break-word}
+    .toolbar{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+    @media(max-width:580px){.toolbar{grid-template-columns:1fr}}
+    .pageBox{margin-top:18px}
+    .pageHeader{display:flex;justify-content:space-between;color:#aeb8c7;font-size:13px;margin-bottom:7px}
+    .stage{position:relative;background:white;border-radius:10px;overflow:hidden;touch-action:none}
+    canvas{display:block;width:100%;height:auto}
+    .overlay{position:absolute;inset:0;touch-action:none;cursor:crosshair}
+    .sel{position:absolute;border:2px solid #ff5f62;background:rgba(255,95,98,.2)}
+    .row{display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap}
+    .row label{display:flex;gap:8px;align-items:center;color:#dce5ef}
+    .row input{width:auto}
+    .note{font-size:13px;background:#221d17;border:1px solid #5b452d;padding:11px;border-radius:12px;color:#efc99b;margin-top:14px}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Large PDF Watermark Remover</h1>
+  <p>PDF server-এ upload হয় না। Browser-এর ভেতরেই watermark area cover করে নতুন PDF তৈরি হবে। GitHub Pages-এ ফ্রি ব্যবহার করা যাবে।</p>
+
+  <div class="card">
+    <label class="drop">
+      <input id="file" type="file" accept="application/pdf">
+      <strong>PDF নির্বাচন করুন</strong><br>
+      <span id="name">300MB+ ফাইলও নির্বাচন করা যাবে; hard size limit নেই</span>
+    </label>
+
+    <div class="toolbar">
+      <button id="previewBtn" class="secondary">First Page Preview</button>
+      <button id="clearBtn" class="secondary">Clear Selection</button>
+    </div>
+
+    <div class="row">
+      <label><input id="applyAll" type="checkbox" checked> একই watermark area সব page-এ apply</label>
+    </div>
+
+    <button id="processBtn">Remove Watermark & Save PDF</button>
+    <div id="status" class="status"></div>
+    <a id="download" class="download hidden">Download cleaned PDF</a>
+
+    <div class="note">
+      300MB+ PDF-এ OCR নেই, তাই আগের version-এর তুলনায় অনেক হালকা। তবে browser-কে original PDF এবং নতুন PDF কিছু সময় RAM-এ রাখতে হয়, তাই খুব কম RAM-এর ফোনে অত্যন্ত বড় PDF crash করতে পারে।
+    </div>
+  </div>
+
+  <div id="previewCard" class="card hidden">
+    <div class="pageHeader">
+      <span>Page 1 preview</span>
+      <span id="selText">No selection</span>
+    </div>
+    <div class="stage" id="stage">
+      <canvas id="canvas"></canvas>
+      <div class="overlay" id="overlay"></div>
+    </div>
+    <p>Watermark-এর উপর আঙুল দিয়ে drag করে rectangle আঁকুন।</p>
+  </div>
+</div>
+
+<script type="module">
+  import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.7.76/pdf.min.mjs';
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.7.76/pdf.worker.min.mjs';
+
+  const { PDFDocument, rgb } = PDFLib;
+
+  const fileEl = document.getElementById('file');
+  const nameEl = document.getElementById('name');
+  const statusEl = document.getElementById('status');
+  const previewBtn = document.getElementById('previewBtn');
+  const processBtn = document.getElementById('processBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const previewCard = document.getElementById('previewCard');
+  const canvas = document.getElementById('canvas');
+  const overlay = document.getElementById('overlay');
+  const stage = document.getElementById('stage');
+  const selText = document.getElementById('selText');
+  const download = document.getElementById('download');
+
+  let file = null;
+  let arrayBuffer = null;
+  let pageSize = null;
+  let selection = null;
+  let box = null;
+  let start = null;
+  let objectUrl = null;
+
+  fileEl.addEventListener('change', () => {
+    file = fileEl.files[0] || null;
+    arrayBuffer = null;
+    selection = null;
+    nameEl.textContent = file ? `${file.name} — ${(file.size/1024/1024).toFixed(1)} MB` : 'PDF নির্বাচন করুন';
+    statusEl.textContent = '';
+    previewCard.classList.add('hidden');
+    download.classList.add('hidden');
+  });
+
+  async function getBuffer() {
+    if (!file) throw new Error('আগে PDF নির্বাচন করুন।');
+    if (!arrayBuffer) arrayBuffer = await file.arrayBuffer();
+    return arrayBuffer;
+  }
+
+  previewBtn.addEventListener('click', async () => {
+    try{
+      statusEl.textContent = 'Preview তৈরি হচ্ছে...';
+      const buf = await getBuffer();
+      const pdf = await pdfjsLib.getDocument({data: buf.slice(0)}).promise;
+      const page = await pdf.getPage(1);
+      const viewport = page.getViewport({scale: 1.25});
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext('2d', {alpha:false});
+      await page.render({canvasContext:ctx, viewport}).promise;
+      pageSize = {w: page.view[2], h: page.view[3]};
+      previewCard.classList.remove('hidden');
+      statusEl.textContent = 'Preview ready. Watermark area drag করে select করুন।';
+    }catch(e){
+      statusEl.textContent = 'Error: ' + e.message;
+    }
+  });
+
+  function pos(ev){
+    const r = overlay.getBoundingClientRect();
+    const p = ev.touches ? ev.touches[0] : ev;
+    return {
+      x: Math.max(0, Math.min(r.width, p.clientX-r.left)),
+      y: Math.max(0, Math.min(r.height, p.clientY-r.top)),
+      w: r.width, h: r.height
+    };
+  }
+
+  function begin(ev){
+    ev.preventDefault();
+    start = pos(ev);
+    if(box) box.remove();
+    box = document.createElement('div');
+    box.className = 'sel';
+    overlay.appendChild(box);
+  }
+
+  function move(ev){
+    if(!start) return;
+    ev.preventDefault();
+    const p = pos(ev);
+    const x = Math.min(start.x,p.x), y = Math.min(start.y,p.y);
+    const w = Math.abs(start.x-p.x), h = Math.abs(start.y-p.y);
+    Object.assign(box.style,{left:x+'px',top:y+'px',width:w+'px',height:h+'px'});
+  }
+
+  function end(ev){
+    if(!start) return;
+    ev.preventDefault();
+    const p = ev.changedTouches ? (() => {
+      const r = overlay.getBoundingClientRect();
+      const t = ev.changedTouches[0];
+      return {
+        x: Math.max(0, Math.min(r.width, t.clientX-r.left)),
+        y: Math.max(0, Math.min(r.height, t.clientY-r.top)),
+        w:r.width,h:r.height
+      };
+    })() : pos(ev);
+
+    const x0 = Math.min(start.x,p.x), y0 = Math.min(start.y,p.y);
+    const x1 = Math.max(start.x,p.x), y1 = Math.max(start.y,p.y);
+    if(x1-x0 < 6 || y1-y0 < 6){
+      box?.remove(); box=null; start=null; return;
+    }
+    selection = {x0:x0/start.w,y0:y0/start.h,x1:x1/start.w,y1:y1/start.h};
+    selText.textContent = '1 area selected';
+    start=null;
+  }
+
+  overlay.addEventListener('mousedown',begin);
+  overlay.addEventListener('mousemove',move);
+  window.addEventListener('mouseup',end);
+  overlay.addEventListener('touchstart',begin,{passive:false});
+  overlay.addEventListener('touchmove',move,{passive:false});
+  overlay.addEventListener('touchend',end,{passive:false});
+
+  clearBtn.addEventListener('click', () => {
+    selection = null;
+    box?.remove(); box=null;
+    selText.textContent='No selection';
+  });
+
+  processBtn.addEventListener('click', async () => {
+    try{
+      if(!selection) throw new Error('আগে watermark area select করুন।');
+      const buf = await getBuffer();
+
+      processBtn.disabled = true;
+      download.classList.add('hidden');
+      statusEl.textContent = 'PDF process হচ্ছে...';
+
+      const pdfDoc = await PDFDocument.load(buf, {
+        updateMetadata: false,
+        ignoreEncryption: false
+      });
+
+      const pages = pdfDoc.getPages();
+      const applyAll = document.getElementById('applyAll').checked;
+      const targetPages = applyAll ? pages : [pages[0]];
+
+      for(let i=0;i<targetPages.length;i++){
+        const page = targetPages[i];
+        const {width,height} = page.getSize();
+
+        const x = selection.x0 * width;
+        const rectW = (selection.x1-selection.x0) * width;
+
+        // Browser coordinates are top-down; PDF coordinates are bottom-up.
+        const top = selection.y0 * height;
+        const bottom = selection.y1 * height;
+        const y = height - bottom;
+        const rectH = bottom - top;
+
+        page.drawRectangle({
+          x, y, width:rectW, height:rectH,
+          color: rgb(1,1,1),
+          borderWidth:0
+        });
+
+        if(i % 25 === 0){
+          statusEl.textContent = `Processing page ${i+1} / ${targetPages.length}...`;
+          await new Promise(r => setTimeout(r, 0));
+        }
+      }
+
+      statusEl.textContent = 'Final PDF তৈরি হচ্ছে...';
+      const out = await pdfDoc.save({
+        useObjectStreams: true,
+        addDefaultPage: false,
+        objectsPerTick: 50
+      });
+
+      const blob = new Blob([out], {type:'application/pdf'});
+      if(objectUrl) URL.revokeObjectURL(objectUrl);
+      objectUrl = URL.createObjectURL(blob);
+      download.href = objectUrl;
+      download.download = file.name.replace(/\.pdf$/i,'') + '_cleaned.pdf';
+      download.classList.remove('hidden');
+      statusEl.textContent = 'সম্পন্ন হয়েছে।';
+    }catch(e){
+      statusEl.textContent = 'Error: ' + e.message;
+    }finally{
+      processBtn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
